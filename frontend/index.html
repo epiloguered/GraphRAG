@@ -987,6 +987,113 @@
             display: none !important;
         }
 
+        .qa-advanced-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 14px;
+            margin: 12px 0 18px;
+        }
+
+        .mini-input {
+            width: 100%;
+            padding: 10px 12px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.25);
+            background: rgba(255, 255, 255, 0.12);
+            color: rgba(255, 255, 255, 0.95);
+        }
+
+        .mini-input option {
+            color: #111827;
+        }
+
+        .toggle-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding-top: 8px;
+        }
+
+        .compare-strategy-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 10px;
+            margin-top: 8px;
+        }
+
+        .strategy-check {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 12px;
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+        }
+
+        .strategy-meta {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin: 12px 0 6px;
+            color: rgba(255, 255, 255, 0.9);
+        }
+
+        .strategy-badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 6px 12px;
+            border-radius: 999px;
+            background: rgba(107, 115, 255, 0.28);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .compare-results-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 16px;
+            margin-top: 18px;
+        }
+
+        .compare-card {
+            padding: 18px;
+            border-radius: 16px;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+        }
+
+        .compare-card h4 {
+            margin-bottom: 10px;
+        }
+
+        .compare-answer {
+            margin-top: 10px;
+            padding: 12px;
+            border-radius: 12px;
+            background: rgba(18, 28, 46, 0.55);
+            line-height: 1.55;
+        }
+
+        .compare-metrics-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 18px;
+        }
+
+        .compare-metrics-table th,
+        .compare-metrics-table td {
+            padding: 10px 12px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+            text-align: left;
+        }
+
+        .compare-graph {
+            height: 320px;
+            margin-top: 14px;
+        }
+
         @media (max-width: 768px) {
             .container {
                 padding: 10px;
@@ -1140,6 +1247,39 @@
                     <!-- <textarea class="textarea" id="questionInput" placeholder="Demo Queston: When was the person who Messi's goals in Copa del Rey compared to get signed by Barcelona?"></textarea> -->
                     <textarea class="textarea" id="questionInput" placeholder="Enter your question here...">When was the person who Messi's goals in Copa del Rey compared to get signed by Barcelona?</textarea>
                 </div>
+<div class="input-group">
+                    <label>Run Mode:</label>
+                    <select class="select" id="qaRunMode" onchange="toggleQAMode()">
+                        <option value="single">Single Strategy</option>
+                        <option value="compare">Compare Strategies</option>
+                    </select>
+                </div>
+                <div class="input-group" id="singleStrategyGroup">
+                    <label>Retrieval Strategy:</label>
+                    <select class="select" id="singleStrategySelect"></select>
+                </div>
+                <div class="input-group hidden" id="compareStrategyGroup">
+                    <label>Compare Strategies:</label>
+                    <div id="compareStrategyList" class="compare-strategy-list"></div>
+                </div>
+                <div class="qa-advanced-grid">
+                    <div>
+                        <label>Top K</label>
+                        <input id="topKInput" class="mini-input" type="number" min="1" max="100" value="20">
+                    </div>
+                    <div>
+                        <label>Max Steps</label>
+                        <input id="maxStepsInput" class="mini-input" type="number" min="1" max="10" value="3">
+                    </div>
+                    <div class="toggle-row">
+                        <input id="useDecompositionToggle" type="checkbox" checked>
+                        <label for="useDecompositionToggle">Use Decomposition</label>
+                    </div>
+                    <div class="toggle-row">
+                        <input id="useIrcotToggle" type="checkbox" checked>
+                        <label for="useIrcotToggle">Use IRCoT</label>
+                    </div>
+                </div>
                 <div class="qa-action-row">
                     <button class="btn" onclick="askQuestion()" id="askBtn">Ask Question</button>
                     <div id="qaCompletionBadge" class="completion-badge" style="display:none;">✔️ Completed</div>
@@ -1153,6 +1293,7 @@
                 
                 <div id="answerSection" class="hidden">
                     <h3 id="answerTitle">Answer:</h3>
+                    <div id="strategyMeta" class="strategy-meta hidden"></div>
                     <div class="answer-content" id="answerContent"></div>
                     
                     <!-- Retrieval Details Container -->
@@ -1160,6 +1301,10 @@
                     
                     <!-- <h3>Query Analysis:</h3>
                     <div class="chart-container" id="queryChart"></div> -->
+                </div>
+                <div id="compareResultsSection" class="hidden">
+                    <h3>Strategy Comparison</h3>
+                    <div id="compareResults"></div>
                 </div>
             </div>
         </div>
@@ -1174,6 +1319,7 @@
         let datasets = [];
         let currentDataset = null;
         let graphChart = null;
+        let retrievalModes = [];
         // let queryChart = null;
         let questionCount = 0;
 
@@ -1326,9 +1472,11 @@
 
         function initializeApp() {
             refreshData();
+            loadRetrievalModes();
             console.log('GraphRAG Studio initialized');
             // Apply initial language to UI
             refreshUITexts();
+            toggleQAMode();
         }
 
         function setupEventListeners() {
@@ -1349,8 +1497,92 @@
                 }
             });
 
+            const runMode = document.getElementById('qaRunMode');
+            if (runMode) {
+                runMode.addEventListener('change', toggleQAMode);
+            }
+
             // initialize language buttons state
             updateLangButtons();
+        }
+
+        async function loadRetrievalModes() {
+            try {
+                const response = await axios.get(`${API_BASE}/api/retrieval-modes`);
+                retrievalModes = Array.isArray(response.data?.modes) ? response.data.modes : [];
+            } catch (error) {
+                retrievalModes = [
+                    { id: 'youtu_default', name: 'Youtu Default', description: 'Decomposition + hybrid retrieval + IRCoT' },
+                    { id: 'chunk_only', name: 'Chunk Only', description: 'Dense chunk retrieval only' },
+                    { id: 'triple_only', name: 'Triple Only', description: 'Triple/community retrieval only' },
+                    { id: 'node_relation_only', name: 'Node + Relation', description: 'Node and relation retrieval only' }
+                ];
+            }
+            renderStrategySelectors();
+        }
+
+        function renderStrategySelectors() {
+            const singleSelect = document.getElementById('singleStrategySelect');
+            const compareList = document.getElementById('compareStrategyList');
+            if (singleSelect) {
+                singleSelect.innerHTML = retrievalModes.map(mode => `
+                    <option value="${mode.id}">${mode.name}</option>
+                `).join('');
+            }
+            if (compareList) {
+                compareList.innerHTML = retrievalModes.map((mode, index) => `
+                    <label class="strategy-check">
+                        <input type="checkbox" class="compareStrategyCheckbox" value="${mode.id}" ${index < 2 ? 'checked' : ''}>
+                        <span>${mode.name}</span>
+                    </label>
+                `).join('');
+            }
+        }
+
+        function toggleQAMode() {
+            const runMode = document.getElementById('qaRunMode')?.value || 'single';
+            const singleGroup = document.getElementById('singleStrategyGroup');
+            const compareGroup = document.getElementById('compareStrategyGroup');
+            const useIrcot = document.getElementById('useIrcotToggle');
+            const answerSection = document.getElementById('answerSection');
+            const compareSection = document.getElementById('compareResultsSection');
+
+            if (singleGroup) singleGroup.classList.toggle('hidden', runMode !== 'single');
+            if (compareGroup) compareGroup.classList.toggle('hidden', runMode !== 'compare');
+            if (compareSection) compareSection.classList.add('hidden');
+            if (answerSection) answerSection.classList.add('hidden');
+            if (useIrcot && runMode === 'compare') {
+                useIrcot.checked = false;
+            }
+        }
+
+        function buildAskPayload() {
+            return {
+                question: document.getElementById('questionInput').value.trim(),
+                dataset_name: document.getElementById('qaDataset').value,
+                retrieval_mode: document.getElementById('singleStrategySelect').value || 'youtu_default',
+                top_k: Number(document.getElementById('topKInput').value || 20),
+                use_decomposition: document.getElementById('useDecompositionToggle').checked,
+                use_ircot: document.getElementById('useIrcotToggle').checked,
+                max_steps: Number(document.getElementById('maxStepsInput').value || 3),
+                return_trace: true,
+                return_subgraph: true
+            };
+        }
+
+        function buildComparePayload() {
+            const compareModes = Array.from(document.querySelectorAll('.compareStrategyCheckbox:checked')).map(input => input.value);
+            return {
+                question: document.getElementById('questionInput').value.trim(),
+                dataset_name: document.getElementById('qaDataset').value,
+                compare_modes: compareModes,
+                top_k: Number(document.getElementById('topKInput').value || 20),
+                use_decomposition: document.getElementById('useDecompositionToggle').checked,
+                use_ircot: false,
+                max_steps: Number(document.getElementById('maxStepsInput').value || 3),
+                return_trace: true,
+                return_subgraph: true
+            };
         }
 
         function setLanguage(lang) {
@@ -1919,28 +2151,33 @@
             graphChart.setOption(option);
         }
 
-    async function askQuestion() {
-            const datasetName = document.getElementById('qaDataset').value;
-            const question = document.getElementById('questionInput').value.trim();
+async function askQuestion() {
+            const runMode = document.getElementById('qaRunMode')?.value || 'single';
+            if (runMode === 'compare') {
+                return askQuestionCompare();
+            }
+            return askQuestionSingle();
+        }
 
-            if (!datasetName || !question) {
+        async function askQuestionSingle() {
+            const payload = buildAskPayload();
+            if (!payload.dataset_name || !payload.question) {
                 showMessage(i18n[currentLang].pleaseSelectAndEnter, 'error');
                 return;
             }
 
-            // Clear previous QA inline messages when starting a new question
             const qaMsgs = document.getElementById('qaMessages');
             if (qaMsgs) qaMsgs.innerHTML = '';
 
             const loading = document.getElementById('qaLoading');
             const answerSection = document.getElementById('answerSection');
+            const compareSection = document.getElementById('compareResultsSection');
             const askBtn = document.getElementById('askBtn');
             const qaBadge = document.getElementById('qaCompletionBadge');
 
             loading.classList.add('show');
-            const procText = document.getElementById('qaProcessingText');
-            if (procText) procText.textContent = i18n[currentLang].processing;
-            answerSection.classList.add('hidden');
+            if (compareSection) compareSection.classList.add('hidden');
+            if (answerSection) answerSection.classList.add('hidden');
             document.getElementById('answerContent').textContent = '';
             askBtn.disabled = true;
             if (qaBadge) qaBadge.style.display = 'none';
@@ -1948,66 +2185,43 @@
             let ws = null;
             let qaCompleted = false;
             try {
-                // Open WebSocket for live QA updates
                 const wsProto = window.location.protocol === 'https:' ? 'wss' : 'ws';
                 ws = new WebSocket(`${wsProto}://${window.location.host}/ws/web_client`);
-                let wsOpen = false;
-                ws.onopen = () => { wsOpen = true; };
                 ws.onmessage = (event) => {
                     try {
                         const data = JSON.parse(event.data);
                         if (data.type === 'qa_update') {
                             if (data.stage === 'sub_question') {
-                                const q = (data.question || '').toString();
-                                if (currentLang === 'zh') {
-                                    const msg = `【子问题 ${data.index}/${data.total}】${q}｜三元组：${data.triples_count || 0}｜片段：${data.chunks_count || 0}`;
-                                    showMessage(msg, 'info');
-                                    if (Array.isArray(data.triples_preview) && data.triples_preview.length) {
-                                        showMessage('预览：' + data.triples_preview.slice(0,3).join(' | '), 'info');
-                                    }
-                                } else {
-                                    const msg = `[Sub ${data.index}/${data.total}] ${q} | Triples: ${data.triples_count || 0} | Chunks: ${data.chunks_count || 0}`;
-                                    showMessage(msg, 'info');
-                                    if (Array.isArray(data.triples_preview) && data.triples_preview.length) {
-                                        showMessage('Preview: ' + data.triples_preview.slice(0,3).join(' | '), 'info');
-                                    }
-                                }
-                            } else if (data.stage === 'ircot') {
-                                const thought = (data.thought_preview || '').toString().slice(0,140) + '...';
-                                const msg = currentLang === 'zh' ? `IRCoT 步骤 ${data.step}/${data.max_steps}：${thought}` : `IRCoT Step ${data.step}/${data.max_steps}: ${thought}`;
+                                const msg = `[${data.strategy_name || 'strategy'}] Sub ${data.index}/${data.total}: ${data.question || ''} | Triples: ${data.triples_count || 0} | Chunks: ${data.chunks_count || 0}`;
                                 showMessage(msg, 'info');
+                            } else if (data.stage === 'ircot') {
+                                const thought = (data.thought_preview || '').toString().slice(0, 140) + '...';
+                                showMessage(`IRCoT ${data.step}/${data.max_steps}: ${thought}`, 'info');
                             }
                         } else if (data.type === 'qa_complete') {
                             qaCompleted = true;
                             showMessage(i18n[currentLang].qaCompleted, 'success-bright', 12000);
                             const badge = document.getElementById('qaCompletionBadge');
-                            if (badge) { badge.style.display = 'inline-flex'; badge.textContent = i18n[currentLang].completedBadge; }
-                            // Do not close here; HTTP response will render the final details
-                            setTimeout(() => { try { if (ws && ws.readyState === WebSocket.OPEN) ws.close(); } catch(_){} }, 1000);
+                            if (badge) {
+                                badge.style.display = 'inline-flex';
+                                badge.textContent = i18n[currentLang].completedBadge;
+                            }
                         }
-                    } catch (e) {
-                        // non-JSON message
-                    }
+                    } catch (_) {}
                 };
                 ws.onerror = () => {};
 
-                const response = await axios.post(`${API_BASE}/api/ask-question`, {
-                    question: question,
-                    dataset_name: datasetName
-                }, {
+                const response = await axios.post(`${API_BASE}/api/ask-question`, payload, {
                     params: { client_id: 'web_client' }
                 });
 
-                const result = response.data;
-                displayAnswer(result);
+                displaySingleStrategyResult(response.data);
                 questionCount++;
                 updateStats();
-
             } catch (error) {
                 console.error('Question failed:', error);
                 showMessage('Failed to process question: ' + (error.response?.data?.detail || error.message), 'error', 10000, false);
             } finally {
-                // Delay hiding the loader briefly when completed so the bright message is visible
                 const hide = () => loading.classList.remove('show');
                 if (qaCompleted) {
                     setTimeout(hide, 1500);
@@ -2019,18 +2233,126 @@
             }
         }
 
-        function displayAnswer(result) {
-            console.log('displayAnswer called with result:', result);
-            
-            document.getElementById('answerContent').textContent = result.answer;
-            
-            // Display detailed retrieval information
+        async function askQuestionCompare() {
+            const payload = buildComparePayload();
+            if (!payload.dataset_name || !payload.question || !payload.compare_modes.length) {
+                showMessage('Please select a dataset, enter a question, and choose at least one strategy', 'error');
+                return;
+            }
+
+            const qaMsgs = document.getElementById('qaMessages');
+            if (qaMsgs) qaMsgs.innerHTML = '';
+
+            const loading = document.getElementById('qaLoading');
+            const answerSection = document.getElementById('answerSection');
+            const compareSection = document.getElementById('compareResultsSection');
+            const askBtn = document.getElementById('askBtn');
+            const qaBadge = document.getElementById('qaCompletionBadge');
+
+            loading.classList.add('show');
+            if (answerSection) answerSection.classList.add('hidden');
+            if (compareSection) compareSection.classList.add('hidden');
+            askBtn.disabled = true;
+            if (qaBadge) qaBadge.style.display = 'none';
+
+            let ws = null;
+            let compareCompleted = false;
+            try {
+                const wsProto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+                ws = new WebSocket(`${wsProto}://${window.location.host}/ws/web_client`);
+                ws.onmessage = (event) => {
+                    try {
+                        const data = JSON.parse(event.data);
+                        if (data.type === 'compare_update') {
+                            const strategy = data.strategy_name || 'strategy';
+                            if (data.message) {
+                                showMessage(`[${strategy}] ${data.message}`, 'info');
+                            }
+                        } else if (data.type === 'compare_complete') {
+                            compareCompleted = true;
+                            showMessage('Strategy comparison completed', 'success-bright', 8000);
+                        }
+                    } catch (_) {}
+                };
+                ws.onerror = () => {};
+
+                const response = await axios.post(`${API_BASE}/api/compare-question`, payload, {
+                    params: { client_id: 'web_client' }
+                });
+                displayCompareResults(response.data);
+            } catch (error) {
+                console.error('Comparison failed:', error);
+                showMessage('Failed to compare strategies: ' + (error.response?.data?.detail || error.message), 'error', 10000, false);
+            } finally {
+                const hide = () => loading.classList.remove('show');
+                if (compareCompleted) {
+                    setTimeout(hide, 1200);
+                } else {
+                    hide();
+                }
+                askBtn.disabled = false;
+                try { if (ws && ws.readyState === WebSocket.OPEN) ws.close(); } catch(_){}
+            }
+        }
+
+function displayAnswer(result) {
+            displaySingleStrategyResult(result);
+        }
+
+        function displaySingleStrategyResult(result) {
+            const answerSection = document.getElementById('answerSection');
+            const compareSection = document.getElementById('compareResultsSection');
+            const strategyMeta = document.getElementById('strategyMeta');
+            document.getElementById('answerContent').textContent = result.answer || '';
+
+            if (strategyMeta) {
+                const metrics = result.metrics || {};
+                strategyMeta.innerHTML = `
+                    <span class="strategy-badge">${result.strategy_name || 'strategy'}</span>
+                    <span>Triples: ${metrics.triples_count || 0}</span>
+                    <span>Chunks: ${metrics.chunks_count || 0}</span>
+                    <span>Latency: ${Number(metrics.latency_ms || 0).toFixed(1)} ms</span>
+                `;
+                strategyMeta.classList.remove('hidden');
+            }
+
             displayRetrievalDetails(result);
-            
-            // Render query analysis chart
-            // renderQueryChart(result.visualization_data);
-            
-            document.getElementById('answerSection').classList.remove('hidden');
+            if (compareSection) compareSection.classList.add('hidden');
+            if (answerSection) answerSection.classList.remove('hidden');
+        }
+
+        function displayCompareResults(payload) {
+            const compareSection = document.getElementById('compareResultsSection');
+            const answerSection = document.getElementById('answerSection');
+            const container = document.getElementById('compareResults');
+            const results = Array.isArray(payload.results) ? payload.results : [];
+            if (!container) return;
+
+            let html = '<div class="compare-results-grid">';
+            results.forEach((result, index) => {
+                html += `
+                    <div class="compare-card">
+                        <h4>${result.strategy_name}</h4>
+                        <div>Triples: ${result.metrics?.triples_count || 0}</div>
+                        <div>Chunks: ${result.metrics?.chunks_count || 0}</div>
+                        <div>Latency: ${Number(result.metrics?.latency_ms || 0).toFixed(1)} ms</div>
+                        <div class="compare-answer">${result.answer || ''}</div>
+                        <div id="compareGraph_${index}" class="compare-graph"></div>
+                    </div>
+                `;
+            });
+            html += '</div>';
+            html += renderMetricsTable(results);
+            container.innerHTML = html;
+
+            setTimeout(() => {
+                results.forEach((result, index) => {
+                    renderReasoningSubgraph(`compareGraph_${index}`, result.reasoning_subgraph || result.visualization_data?.knowledge_graph || { nodes: [], links: [], categories: [] });
+                });
+            }, 100);
+
+            if (answerSection) answerSection.classList.add('hidden');
+            if (compareSection) compareSection.classList.remove('hidden');
         }
 
         function displayRetrievalDetails(result) {
@@ -2161,13 +2483,36 @@
                     chartContainer.style.display = 'block';
                     console.log('Chart container made visible');
                 }
-                renderTriplesChart(result.retrieved_triples || []);
+                renderReasoningSubgraph('triplesChart', result.reasoning_subgraph || result.visualization_data?.knowledge_graph || result.retrieved_triples || []);
             }, 200);
         }
 
-        function renderTriplesChart(triples) {
-            console.log('renderTriplesChart called with:', triples.length, 'triples');
-            console.log('First triple example:', triples[0]);
+        function renderReasoningSubgraph(containerId, graphOrTriples) {
+            renderTriplesChart(graphOrTriples, containerId);
+        }
+
+        function renderMetricsTable(results) {
+            if (!Array.isArray(results) || !results.length) return '';
+            let html = '<table class="compare-metrics-table"><thead><tr><th>Strategy</th><th>Triples</th><th>Chunks</th><th>Latency (ms)</th><th>Sub-questions</th></tr></thead><tbody>';
+            results.forEach(result => {
+                html += `
+                    <tr>
+                        <td>${result.strategy_name || ''}</td>
+                        <td>${result.metrics?.triples_count || 0}</td>
+                        <td>${result.metrics?.chunks_count || 0}</td>
+                        <td>${Number(result.metrics?.latency_ms || 0).toFixed(1)}</td>
+                        <td>${result.metrics?.sub_questions_count || 0}</td>
+                    </tr>
+                `;
+            });
+            html += '</tbody></table>';
+            return html;
+        }
+
+        function renderTriplesChart(graphOrTriples, containerId = 'triplesChart') {
+            const triples = Array.isArray(graphOrTriples) ? graphOrTriples : [];
+            const graphData = (!Array.isArray(graphOrTriples) && graphOrTriples && typeof graphOrTriples === 'object') ? graphOrTriples : null;
+            console.log('renderTriplesChart called');
 
             // Helper: truncate by words. If more than 3 words, keep first 2 then ellipsis.
             function truncateWords(str){
@@ -2177,7 +2522,7 @@
                 return words.slice(0,2).join(' ') + '...';
             }
             
-            const chartContainer = document.getElementById('triplesChart');
+            const chartContainer = document.getElementById(containerId);
             if (!chartContainer) {
                 console.error('Triples chart container not found');
                 return;
@@ -2194,19 +2539,19 @@
             
             console.log('ECharts library available, version:', echarts.version);
             
-            // Dispose existing chart
-            if (window.triplesChart && typeof window.triplesChart.dispose === 'function') {
+            window.reasoningCharts = window.reasoningCharts || {};
+            if (window.reasoningCharts[containerId] && typeof window.reasoningCharts[containerId].dispose === 'function') {
                 try {
-                    window.triplesChart.dispose();
+                    window.reasoningCharts[containerId].dispose();
                     console.log('Previous chart disposed');
                 } catch (e) {
                     console.warn('Error disposing previous chart:', e);
                 }
             }
-            window.triplesChart = null;
+            window.reasoningCharts[containerId] = null;
             
             try {
-                window.triplesChart = echarts.init(chartContainer);
+                window.reasoningCharts[containerId] = echarts.init(chartContainer);
                 console.log('ECharts initialized successfully');
             } catch (e) {
                 console.error('Error initializing ECharts:', e);
@@ -2214,16 +2559,36 @@
                 return;
             }
             
-            // Parse triples and build graph data
             const nodes = new Map();
             const links = [];
             const categories = new Set();
-            
-            console.log('Parsing', triples.length, 'triples...');
-            
-            triples.forEach((tripleStr, index) => {
+
+            if (graphData && Array.isArray(graphData.nodes)) {
+                (graphData.nodes || []).forEach(node => {
+                    nodes.set(node.id, {
+                        id: node.id,
+                        name: truncateWords(node.name || node.id || ''),
+                        category: node.category || 'entity',
+                        symbolSize: node.symbolSize || 24,
+                        itemStyle: node.itemStyle || { color: getCategoryColor(node.category || 'entity') },
+                        rawName: node.name || node.id || ''
+                    });
+                    categories.add(node.category || 'entity');
+                });
+                (graphData.links || []).forEach(link => {
+                    links.push({
+                        source: link.source,
+                        target: link.target,
+                        name: truncateWords(link.name || link.relation || ''),
+                        rawName: link.name || link.relation || '',
+                        lineStyle: link.lineStyle || { color: '#6b73ff', width: 2 }
+                    });
+                });
+            } else {
+                console.log('Parsing', triples.length, 'triples...');
+                triples.forEach((tripleStr, index) => {
                 // Parse triple format: (subject, relation, object) [score: X.XXX]
-                const match = tripleStr.match(/\(([^,]+),\s*([^,]+),\s*([^)]+)\)/);
+                const match = typeof tripleStr === 'string' ? tripleStr.match(/\(([^,]+),\s*([^,]+),\s*([^)]+)\)/) : null;
                 if (match) {
                     if (index < 3) {
                         console.log(`Triple ${index + 1} parsed successfully:`, match.slice(1));
@@ -2280,7 +2645,8 @@
                         }
                     });
                 }
-            });
+                });
+            }
             
             const nodesList = Array.from(nodes.values());
             const categoriesList = Array.from(categories).map(cat => ({
@@ -2374,14 +2740,14 @@
             }
             
             try {
-                window.triplesChart.setOption(option);
+                window.reasoningCharts[containerId].setOption(option);
                 console.log('Chart option set successfully');
                 
                 // Ensure chart is properly sized
                 setTimeout(() => {
-                    if (window.triplesChart && typeof window.triplesChart.resize === 'function') {
+                    if (window.reasoningCharts[containerId] && typeof window.reasoningCharts[containerId].resize === 'function') {
                         try {
-                            window.triplesChart.resize();
+                            window.reasoningCharts[containerId].resize();
                             console.log('Chart resized');
                         } catch (e) {
                             console.warn('Error resizing chart:', e);

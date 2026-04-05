@@ -25,8 +25,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import uvicorn
 
+from schemas_api.request_models import AskQuestionRequest, CompareQuestionRequest
+from schemas_api.response_models import CompareQuestionResponse, StrategyRunResponse
 from utils.logger import logger
-import ast
 
 # Import document parser
 try:
@@ -41,6 +42,7 @@ try:
     from models.constructor import kt_gen as constructor
     from models.retriever import agentic_decomposer as decomposer, enhanced_kt_retriever as retriever
     from config import get_config, ConfigManager
+    from services.qa_orchestrator import QAOrchestrator
     GRAPHRAG_AVAILABLE = True
     logger.info("✅ GraphRAG components loaded successfully")
 except ImportError as e:
@@ -104,18 +106,6 @@ class GraphConstructionResponse(BaseModel):
     message: str
     graph_data: Optional[Dict] = None
 
-class QuestionRequest(BaseModel):
-    question: str
-    dataset_name: str
-
-class QuestionResponse(BaseModel):
-    answer: str
-    sub_questions: List[Dict]
-    retrieved_triples: List[str]
-    retrieved_chunks: List[str]
-    reasoning_steps: List[Dict]
-    visualization_data: Dict
-
 def ensure_demo_schema_exists() -> str:
     """Ensure default demo schema exists and return its path."""
     os.makedirs("schemas", exist_ok=True)
@@ -146,6 +136,9 @@ def get_schema_path_for_dataset(dataset_name: str) -> str:
         if os.path.exists(ds_schema):
             return ds_schema
     return ensure_demo_schema_exists()
+
+
+qa_orchestrator = QAOrchestrator(manager, get_schema_path_for_dataset) if GRAPHRAG_AVAILABLE else None
 
 async def send_progress_update(client_id: str, stage: str, progress: int, message: str):
     """Send progress update via WebSocket"""
@@ -660,390 +653,52 @@ def convert_standard_format(graph_data: Dict) -> Dict:
         }
     }
 
-@app.post("/api/ask-question", response_model=QuestionResponse)
-async def ask_question(request: QuestionRequest, client_id: str = "default"):
-    """Process question using agent mode (iterative retrieval + reasoning) and return answer."""
+@app.get("/api/retrieval-modes")
+async def get_retrieval_modes():
+    if qa_orchestrator is None:
+        return {
+            "modes": [
+                {"id": "youtu_default", "name": "Youtu Default", "description": "Decomposition + hybrid retrieval + IRCoT"},
+                {"id": "chunk_only", "name": "Chunk Only", "description": "Dense chunk retrieval only."},
+                {"id": "triple_only", "name": "Triple Only", "description": "FAISS triple and community retrieval."},
+                {"id": "node_relation_only", "name": "Node + Relation", "description": "Node and relation retrieval only."},
+            ]
+        }
+    return {"modes": qa_orchestrator.list_modes()}
+
+
+@app.post("/api/ask-question", response_model=StrategyRunResponse)
+async def ask_question(request: AskQuestionRequest, client_id: str = "default"):
     try:
         if not GRAPHRAG_AVAILABLE:
             raise HTTPException(status_code=503, detail="GraphRAG components not available. Please install or configure them.")
-        dataset_name = request.dataset_name
-        question = request.question
-
-        await send_progress_update(client_id, "retrieval", 10, "Initializing retrieval system (agent mode)...")
-
-        graph_path = f"output/graphs/{dataset_name}_new.json"
-        schema_path = get_schema_path_for_dataset(dataset_name)
-        if not os.path.exists(graph_path):
-            graph_path = "output/graphs/demo_new.json"
-        if not os.path.exists(graph_path):
-            raise HTTPException(status_code=404, detail="Graph not found. Please construct graph first.")
-
-        # Config & components
-        global config
-        if config is None:
-            config = get_config("config/base_config.yaml")
-
-        graphq = decomposer.GraphQ(dataset_name, config=config)
-        kt_retriever = retriever.KTRetriever(
-            dataset_name,
-            graph_path,
-            recall_paths=config.retrieval.recall_paths,
-            schema_path=schema_path,
-            top_k=config.retrieval.top_k_filter,
-            mode="agent",  # force agent mode
-            config=config
-        )
-
-        await send_progress_update(client_id, "retrieval", 40, "Building indices...")
-        loop = asyncio.get_running_loop()
-        # Offload index building to thread executor to avoid blocking event loop
-        await loop.run_in_executor(None, kt_retriever.build_indices)
-
-        # Notify QA start via WS so frontend can show immediate progress
-        try:
-            await manager.send_message({
-                "type": "qa_update",
-                "stage": "start",
-                "message": "Question processing started",
-                "dataset": dataset_name,
-                "question": question,
-                "timestamp": datetime.now().isoformat()
-            }, client_id)
-            await asyncio.sleep(0)
-        except Exception as _e:
-            logger.debug(f"QA start ws send failed: {_e}")
-
-        # Helper functions (reuse a simplified version of main.py logic)
-        def _dedup(items):
-            return list({x: None for x in items}.keys())
-        def _merge_chunk_contents(ids, mapping):
-            chunks = []
-            for idx, i in enumerate(ids, 1):
-                content = mapping.get(i, f"[Missing content for chunk {i}]")
-                chunks.append(f"[Chunk {idx}] {content}")
-            return chunks
-
-        # Step 1: decomposition
-        await send_progress_update(client_id, "retrieval", 50, "Decomposing question...")
-        try:
-            # Offload decomposition to executor
-            loop = asyncio.get_running_loop()
-            decomposition = await loop.run_in_executor(None, lambda: graphq.decompose(question, schema_path))
-            sub_questions = decomposition.get("sub_questions", [])
-            involved_types = decomposition.get("involved_types", {})
-            try:
-                await manager.send_message({
-                    "type": "qa_update",
-                    "stage": "decompose",
-                    "sub_questions_count": len(sub_questions),
-                    "sub_questions": [sq.get("sub-question", "") for sq in sub_questions][:5],
-                    "timestamp": datetime.now().isoformat()
-                }, client_id)
-                await asyncio.sleep(0.05)
-            except Exception:
-                pass
-        except Exception as e:
-            logger.error(f"Decompose failed: {e}")
-            sub_questions = [{"sub-question": question}]
-            involved_types = {"nodes": [], "relations": [], "attributes": []}
-            decomposition = {"sub_questions": sub_questions, "involved_types": involved_types}
-
-        reasoning_steps = []
-        all_triples = set()
-        all_chunk_ids = set()
-        all_chunk_contents: Dict[str, str] = {}
-
-        # Step 2: initial retrieval for each sub-question
-        await send_progress_update(client_id, "retrieval", 65, "Initial retrieval...")
-        import time as _time
-        for idx, sq in enumerate(sub_questions):
-            sq_text = sq.get("sub-question", question)
-            start_t = _time.time()
-            # Offload retrieval to thread executor to avoid blocking event loop
-            def _run_retrieval():
-                return kt_retriever.process_retrieval_results(
-                    sq_text,
-                    top_k=config.retrieval.top_k_filter,
-                    involved_types=involved_types
-                )
-            retrieval_results, elapsed = await loop.run_in_executor(None, _run_retrieval)
-            triples = retrieval_results.get('triples', []) or []
-            chunk_ids = retrieval_results.get('chunk_ids', []) or []
-            chunk_contents = retrieval_results.get('chunk_contents', []) or []
-            if isinstance(chunk_contents, dict):
-                for cid, ctext in chunk_contents.items():
-                    all_chunk_contents[cid] = ctext
-            else:
-                for i_c, cid in enumerate(chunk_ids):
-                    if i_c < len(chunk_contents):
-                        all_chunk_contents[cid] = chunk_contents[i_c]
-            all_triples.update(triples)
-            all_chunk_ids.update(chunk_ids)
-            reasoning_steps.append({
-                "type": "sub_question",
-                "question": sq_text,
-                "triples": triples[:10],
-                "triples_count": len(triples),
-                "chunks_count": len(chunk_ids),
-                "processing_time": elapsed,
-                "chunk_contents": list(all_chunk_contents.values())[:3]
-            })
-
-            # Stream this sub-question's partial result to frontend via WebSocket
-            try:
-                await manager.send_message({
-                    "type": "qa_update",
-                    "stage": "sub_question",
-                    "index": idx + 1,
-                    "total": len(sub_questions),
-                    "question": sq_text,
-                    "triples_preview": list(dict.fromkeys(triples))[:5],
-                    "triples_count": len(triples),
-                    "chunks_count": len(chunk_ids),
-                    "processing_time": elapsed,
-                    "timestamp": datetime.now().isoformat()
-                }, client_id)
-                # yield to event loop to flush WS frames
-                await asyncio.sleep(0)
-            except Exception as _e:
-                logger.debug(f"QA update ws send failed for sub_question {idx+1}: {_e}")
-
-        # Step 3: IRCoT iterative refinement
-        await send_progress_update(client_id, "retrieval", 75, "Iterative reasoning...")
-        try:
-            await manager.send_message({
-                "type": "qa_update",
-                "stage": "ircot_start",
-                "message": "Starting iterative reasoning",
-                "timestamp": datetime.now().isoformat()
-            }, client_id)
-            await asyncio.sleep(0.05)
-        except Exception:
-            pass
-        max_steps = getattr(getattr(config.retrieval, 'agent', object()), 'max_steps', 3)
-        current_query = question
-        thoughts = []
-
-        # Initial answer attempt
-        initial_triples = _dedup(list(all_triples))
-        initial_chunk_ids = list(set(all_chunk_ids))
-        initial_chunk_contents = _merge_chunk_contents(initial_chunk_ids, all_chunk_contents)
-        context_initial = "=== Triples ===\n" + "\n".join(initial_triples[:20]) + "\n=== Chunks ===\n" + "\n---\n".join(initial_chunk_contents[:10])
-        init_prompt = kt_retriever.generate_prompt(question, context_initial)
-        try:
-            # Offload LLM call to thread executor
-            initial_answer = await loop.run_in_executor(None, lambda: kt_retriever.generate_answer(init_prompt))
-        except Exception as e:
-            initial_answer = f"Initial answer failed: {e}"
-        thoughts.append(f"Initial: {initial_answer[:200]}")
-        final_answer = initial_answer
-
-        for step in range(1, max_steps + 1):
-            loop_triples = _dedup(list(all_triples))
-            loop_chunk_ids = list(set(all_chunk_ids))
-            loop_chunk_contents = _merge_chunk_contents(loop_chunk_ids, all_chunk_contents)
-            loop_ctx = "=== Triples ===\n" + "\n".join(loop_triples[:20]) + "\n=== Chunks ===\n" + "\n---\n".join(loop_chunk_contents[:10])
-            loop_prompt = f"""
-You are an expert knowledge assistant using iterative retrieval with chain-of-thought reasoning.
-Current Question: {question}
-Current Iteration Query: {current_query}
-Knowledge Context:\n{loop_ctx}
-Previous Thoughts: {' | '.join(thoughts) if thoughts else 'None'}
-Instructions:
-1. If enough info answer with: So the answer is: <answer>
-2. Else propose new query with: The new query is: <query>
-Your reasoning:
-"""
-            try:
-                reasoning = await loop.run_in_executor(None, lambda: kt_retriever.generate_answer(loop_prompt))
-            except Exception as e:
-                reasoning = f"Reasoning error: {e}"
-            thoughts.append(reasoning[:400])
-            reasoning_steps.append({
-                "type": "ircot_step",
-                "question": current_query,
-                "triples": loop_triples[:10],
-                "triples_count": len(loop_triples),
-                "chunks_count": len(loop_chunk_ids),
-                "processing_time": 0,
-                "chunk_contents": loop_chunk_contents[:3],
-                "thought": reasoning[:300]
-            })
-
-            # Stream iterative reasoning step updates (optional but helpful)
-            try:
-                await manager.send_message({
-                    "type": "qa_update",
-                    "stage": "ircot",
-                    "step": step,
-                    "max_steps": max_steps,
-                    "current_query": current_query,
-                    "thought_preview": (reasoning or "")[:200],
-                    "timestamp": datetime.now().isoformat()
-                }, client_id)
-                # yield to event loop to flush WS frames
-                await asyncio.sleep(0)
-            except Exception as _e:
-                logger.debug(f"QA update ws send failed for ircot step {step}: {_e}")
-            if "So the answer is:" in reasoning:
-                m = re.search(r"So the answer is:\s*(.*)", reasoning, flags=re.IGNORECASE | re.DOTALL)
-                final_answer = m.group(1).strip() if m else reasoning
-                break
-            if "The new query is:" not in reasoning:
-                final_answer = initial_answer or reasoning
-                break
-            new_query = reasoning.split("The new query is:", 1)[1].strip().splitlines()[0]
-            if not new_query or new_query == current_query:
-                final_answer = initial_answer or reasoning
-                break
-            current_query = new_query
-            await send_progress_update(client_id, "retrieval", min(90, 75 + step * 5), f"Iterative retrieval step {step}...")
-            try:
-                def _run_more_retrieval():
-                    return kt_retriever.process_retrieval_results(current_query, top_k=config.retrieval.top_k_filter)
-                new_ret, _ = await loop.run_in_executor(None, _run_more_retrieval)
-                new_triples = new_ret.get('triples', []) or []
-                new_chunk_ids = new_ret.get('chunk_ids', []) or []
-                new_chunk_contents = new_ret.get('chunk_contents', []) or []
-                if isinstance(new_chunk_contents, dict):
-                    for cid, ctext in new_chunk_contents.items():
-                        all_chunk_contents[cid] = ctext
-                else:
-                    for i_c, cid in enumerate(new_chunk_ids):
-                        if i_c < len(new_chunk_contents):
-                            all_chunk_contents[cid] = new_chunk_contents[i_c]
-                all_triples.update(new_triples)
-                all_chunk_ids.update(new_chunk_ids)
-            except Exception as e:
-                logger.error(f"Iterative retrieval failed: {e}")
-                break
-
-        # Final aggregation
-        final_triples = _dedup(list(all_triples))[:20]
-        final_chunk_ids = list(set(all_chunk_ids))
-        final_chunk_contents = _merge_chunk_contents(final_chunk_ids, all_chunk_contents)[:10]
-
-        await send_progress_update(client_id, "retrieval", 100, "Answer generation completed!")
-
-        # Notify frontend that QA process is complete with a compact summary
-        try:
-            await manager.send_message({
-                "type": "qa_complete",
-                "answer_preview": (final_answer or "")[:300],
-                "sub_questions_count": len(sub_questions),
-                "triples_final_count": len(final_triples),
-                "chunks_final_count": len(final_chunk_contents),
-                "timestamp": datetime.now().isoformat()
-            }, client_id)
-        except Exception as _e:
-            logger.debug(f"QA complete ws send failed: {_e}")
-
-        visualization_data = {
-            "subqueries": prepare_subquery_visualization(sub_questions, reasoning_steps),
-            "knowledge_graph": prepare_retrieved_graph_visualization(final_triples),
-            "reasoning_flow": prepare_reasoning_flow_visualization(reasoning_steps),
-            "retrieval_details": {
-                "total_triples": len(final_triples),
-                "total_chunks": len(final_chunk_contents),
-                "sub_questions_count": len(sub_questions),
-                "triples_by_subquery": [s.get("triples_count", 0) for s in reasoning_steps if s.get("type") == "sub_question"]
-            }
-        }
-
-        return QuestionResponse(
-            answer=final_answer,
-            sub_questions=sub_questions,
-            retrieved_triples=final_triples,
-            retrieved_chunks=final_chunk_contents,
-            reasoning_steps=reasoning_steps,
-            visualization_data=visualization_data
-        )
-    except Exception as e:
-        await send_progress_update(client_id, "retrieval", 0, f"Question answering failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return await qa_orchestrator.run_single(request, client_id=client_id)
+    except FileNotFoundError as exc:
+        await send_progress_update(client_id, "retrieval", 0, str(exc))
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        await send_progress_update(client_id, "retrieval", 0, str(exc))
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        await send_progress_update(client_id, "retrieval", 0, f"Question answering failed: {str(exc)}")
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
-def prepare_subquery_visualization(sub_questions: List[Dict], reasoning_steps: List[Dict]) -> Dict:
-    """Prepare subquery visualization"""
-    nodes = [{"id": "original", "name": "Original Question", "category": "question", "symbolSize": 40}]
-    links = []
-    
-    for i, sub_q in enumerate(sub_questions):
-        sub_id = f"sub_{i}"
-        nodes.append({
-            "id": sub_id,
-            "name": sub_q.get("sub-question", "")[:20] + "...",
-            "category": "sub_question",
-            "symbolSize": 30
-        })
-        links.append({"source": "original", "target": sub_id, "name": "decomposed to"})
-    
-    return {
-        "nodes": nodes,
-        "links": links,
-        "categories": [
-            {"name": "question", "itemStyle": {"color": "#ff6b6b"}},
-            {"name": "sub_question", "itemStyle": {"color": "#4ecdc4"}}
-        ]
-    }
-
-def prepare_retrieved_graph_visualization(triples: List[str]) -> Dict:
-    """Prepare retrieved knowledge visualization"""
-    nodes = []
-    links = []
-    node_set = set()
-    
-    for triple in triples[:10]:
-        try:
-            if triple.startswith('[') and triple.endswith(']'):
-                try:
-                    parts = ast.literal_eval(triple)
-                except Exception:
-                    continue
-                if len(parts) == 3:
-                    source, relation, target = parts
-                    
-                    for entity in [source, target]:
-                        if entity not in node_set:
-                            node_set.add(entity)
-                            nodes.append({
-                                "id": str(entity),
-                                "name": str(entity)[:20],
-                                "category": "entity",
-                                "symbolSize": 20
-                            })
-                    
-                    links.append({
-                        "source": str(source),
-                        "target": str(target),
-                        "name": str(relation)
-                    })
-        except Exception:
-            continue
-    
-    return {
-        "nodes": nodes,
-        "links": links,
-        "categories": [{"name": "entity", "itemStyle": {"color": "#95de64"}}]
-    }
-
-def prepare_reasoning_flow_visualization(reasoning_steps: List[Dict]) -> Dict:
-    """Prepare reasoning flow visualization"""
-    steps_data = []
-    for i, step in enumerate(reasoning_steps):
-        steps_data.append({
-            "step": i + 1,
-            "type": step.get("type", "unknown"),
-            "question": step.get("question", "")[:50],
-            "triples_count": step.get("triples_count", 0),
-            "chunks_count": step.get("chunks_count", 0),
-            "processing_time": step.get("processing_time", 0)
-        })
-    
-    return {
-        "steps": steps_data,
-        "timeline": [step["processing_time"] for step in steps_data]
-    }
+@app.post("/api/compare-question", response_model=CompareQuestionResponse)
+async def compare_question(request: CompareQuestionRequest, client_id: str = "default"):
+    try:
+        if not GRAPHRAG_AVAILABLE:
+            raise HTTPException(status_code=503, detail="GraphRAG components not available. Please install or configure them.")
+        return await qa_orchestrator.run_compare(request, client_id=client_id)
+    except FileNotFoundError as exc:
+        await send_progress_update(client_id, "compare", 0, str(exc))
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        await send_progress_update(client_id, "compare", 0, str(exc))
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        await send_progress_update(client_id, "compare", 0, f"Comparison failed: {str(exc)}")
+        raise HTTPException(status_code=500, detail=str(exc))
 
 @app.get("/api/datasets")
 async def get_datasets():
@@ -1281,6 +936,7 @@ async def startup_event():
     os.makedirs("data/uploaded", exist_ok=True)
     os.makedirs("output/graphs", exist_ok=True)
     os.makedirs("output/logs", exist_ok=True)
+    os.makedirs("output/experiments", exist_ok=True)
     os.makedirs("schemas", exist_ok=True)
     
     logger.info("🚀 Youtu-GraphRAG Unified Interface initialized")

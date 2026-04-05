@@ -1,5 +1,6 @@
 import os
 import pickle
+import re
 import threading
 import time
 from functools import lru_cache
@@ -1443,12 +1444,12 @@ class KTRetriever:
         all_scored_triples = []
         
         # Add path2 scored triples if available
-        path2_scored = results['path2_results'].get('scored_triples', [])
+        path2_scored = results.get('path2_results', {}).get('scored_triples', [])
         if path2_scored:
             all_scored_triples.extend(path2_scored)
         
         # Add path1 reranked triples
-        path1_triples = results['path1_results'].get('one_hop_triples', [])
+        path1_triples = results.get('path1_results', {}).get('one_hop_triples', [])
         if path1_triples:
             path1_scored = self._rerank_triples_by_relevance(path1_triples, question_embed)
             all_scored_triples.extend(path1_scored)
@@ -1503,6 +1504,199 @@ class KTRetriever:
     def _get_matching_chunks(self, chunk_ids: set) -> List[str]:
         """Get chunk contents for given chunk IDs."""
         return [self.chunk2id[chunk_id] for chunk_id in chunk_ids if chunk_id in self.chunk2id]
+
+    def _format_unified_retrieval_output(
+        self,
+        question_embed: torch.Tensor,
+        *,
+        scored_triples: Optional[List[Tuple[str, str, str, float]]] = None,
+        chunk_results: Optional[Dict] = None,
+        retrieved_nodes: Optional[List[str]] = None,
+        source_path: str = "hybrid",
+        top_k: int = 20,
+    ) -> Dict:
+        scored_triples = scored_triples or []
+        retrieved_nodes = retrieved_nodes or []
+
+        chunk_retrieval_results, chunk_retrieval_ids = self._process_chunk_results(
+            chunk_results or {},
+            question_embed,
+            top_k,
+        )
+        limited_scored_triples = scored_triples[:top_k]
+        formatted_triples = self._format_scored_triples(limited_scored_triples)
+        triple_chunk_ids = self._extract_chunk_ids_from_triples(limited_scored_triples)
+        all_chunk_ids = chunk_retrieval_ids | triple_chunk_ids
+        matching_chunks = self._get_matching_chunks(all_chunk_ids)
+
+        structured_triples = []
+        for head, relation, tail, score in limited_scored_triples:
+            structured_triples.append({
+                "head": head,
+                "relation": relation,
+                "tail": tail,
+                "score": float(score),
+            })
+
+        return {
+            "triples": formatted_triples,
+            "chunk_ids": list(all_chunk_ids),
+            "chunk_contents": matching_chunks,
+            "chunk_retrieval_results": chunk_retrieval_results,
+            "retrieved_nodes": retrieved_nodes,
+            "scores": None,
+            "source_path": source_path,
+            "structured_triples": structured_triples,
+        }
+
+    def retrieve_youtu_hybrid(self, question: str, top_k: int = 20, involved_types: dict = None) -> Dict:
+        if involved_types:
+            question_embed, results = self.retrieve_with_type_filtering(question, involved_types)
+        else:
+            question_embed, results = self.retrieve(question)
+
+        all_scored_triples = self._collect_all_scored_triples(results, question_embed)
+        top_nodes = list(results.get("path1_results", {}).get("top_nodes", []))
+        scored_nodes = []
+        for head, _, tail, _ in all_scored_triples[:top_k]:
+            scored_nodes.extend([head, tail])
+        retrieved_nodes = list(dict.fromkeys(top_nodes + scored_nodes))
+        chunk_results = results.get("path1_results", {}).get("chunk_results")
+        return self._format_unified_retrieval_output(
+            question_embed,
+            scored_triples=all_scored_triples,
+            chunk_results=chunk_results,
+            retrieved_nodes=retrieved_nodes,
+            source_path="youtu_hybrid",
+            top_k=top_k,
+        )
+
+    def retrieve_triple_only(self, question: str, top_k: int = 20, involved_types: dict = None) -> Dict:
+        question_embed = self._get_query_embedding(question)
+        results = self._triple_only_retrieval(question_embed)
+        scored_triples = results.get("scored_triples", [])
+        retrieved_nodes = list(dict.fromkeys(
+            [node for triple in scored_triples[:top_k] for node in (triple[0], triple[2])]
+        ))
+        return self._format_unified_retrieval_output(
+            question_embed,
+            scored_triples=scored_triples,
+            chunk_results=None,
+            retrieved_nodes=retrieved_nodes,
+            source_path="triple_only",
+            top_k=top_k,
+        )
+
+    def retrieve_node_relation_only(self, question: str, top_k: int = 20, involved_types: dict = None) -> Dict:
+        question_embed = self._get_query_embedding(question)
+        if involved_types and any(involved_types.get(key, []) for key in ["nodes", "relations", "attributes"]):
+            filtered_results = self._type_filtered_node_relation_retrieval(question_embed, question, involved_types)
+            path1_results = filtered_results.get("path1_results", filtered_results)
+        else:
+            path1_results = self._node_relation_retrieval(question_embed, question)
+        scored_triples = self._rerank_triples_by_relevance(
+            path1_results.get("one_hop_triples", []),
+            question_embed,
+        )
+        return self._format_unified_retrieval_output(
+            question_embed,
+            scored_triples=scored_triples,
+            chunk_results=path1_results.get("chunk_results"),
+            retrieved_nodes=path1_results.get("top_nodes", []),
+            source_path="node_relation_only",
+            top_k=top_k,
+        )
+
+    def retrieve_chunk_only(self, question: str, top_k: int = 20, involved_types: dict = None) -> Dict:
+        question_embed = self._get_query_embedding(question)
+        chunk_results = self._chunk_embedding_retrieval(question_embed, top_k)
+        reranked_results = self._rerank_chunks_by_relevance(chunk_results, question_embed, top_k)
+        return {
+            "triples": [],
+            "chunk_ids": reranked_results.get("chunk_ids", []),
+            "chunk_contents": reranked_results.get("chunk_contents", []),
+            "retrieved_nodes": [],
+            "scores": {"chunks": reranked_results.get("scores", [])},
+            "source_path": "chunk_only",
+            "structured_triples": [],
+        }
+
+    def build_answer_from_context(self, question: str, triples: List[str], chunks: List[str]) -> str:
+        context = "=== Triples ===\n" + "\n".join(triples[:20])
+        context += "\n=== Chunks ===\n" + "\n---\n".join(chunks[:10])
+        prompt = self.generate_prompt(question, context)
+        return self.generate_answer(prompt)
+
+    def build_reasoning_subgraph(self, triples: List[str], trace: List[Dict] = None) -> Dict:
+        trace = trace or []
+        nodes = []
+        links = []
+        node_map = {}
+
+        for step in trace:
+            for structured_triple in step.get("meta", {}).get("structured_triples", []):
+                source = structured_triple.get("head")
+                relation = structured_triple.get("relation")
+                target = structured_triple.get("tail")
+                if not source or not relation or not target:
+                    continue
+                for entity in [source, target]:
+                    if entity not in node_map:
+                        node = {
+                            "id": entity,
+                            "name": str(entity)[:32],
+                            "category": "entity",
+                            "symbolSize": 22,
+                            "source_strategy": step.get("strategy_name", "unknown"),
+                            "first_seen_step": step.get("step_id", 1),
+                        }
+                        node_map[entity] = node
+                        nodes.append(node)
+                links.append({
+                    "source": source,
+                    "target": target,
+                    "name": relation,
+                    "relation": relation,
+                    "source_strategy": step.get("strategy_name", "unknown"),
+                    "first_seen_step": step.get("step_id", 1),
+                    "score": structured_triple.get("score"),
+                })
+
+        if not nodes:
+            for triple in triples:
+                body = triple
+                if " [score:" in body:
+                    body = body.split(" [score:", 1)[0]
+                match = re.match(r"^\((.*?),\s*([^,]+),\s*(.*?)\)$", body.strip())
+                if not match:
+                    continue
+                source, relation, target = match.groups()
+                for entity in [source, target]:
+                    if entity not in node_map:
+                        node = {
+                            "id": entity,
+                            "name": str(entity)[:32],
+                            "category": "entity",
+                            "symbolSize": 22,
+                            "source_strategy": "unknown",
+                            "first_seen_step": 1,
+                        }
+                        node_map[entity] = node
+                        nodes.append(node)
+                links.append({
+                    "source": source,
+                    "target": target,
+                    "name": relation,
+                    "relation": relation,
+                    "source_strategy": "unknown",
+                    "first_seen_step": 1,
+                })
+
+        return {
+            "nodes": nodes,
+            "links": links,
+            "categories": [{"name": "entity", "itemStyle": {"color": "#95de64"}}],
+        }
 
     def process_retrieval_results(self, question: str, top_k: int = 20, involved_types: dict = None) -> Tuple[Dict, float]:
         """Process retrieval results with optimized structure and helper methods."""
