@@ -13,7 +13,7 @@ wheels/
 
 .venv
 .env
-
+.env.example
 *.pt
 *.pkl
 *.npy

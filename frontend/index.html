@@ -2565,15 +2565,26 @@ function displayAnswer(result) {
 
             if (graphData && Array.isArray(graphData.nodes)) {
                 (graphData.nodes || []).forEach(node => {
+                    const displayName = (node.name || '').toString().trim();
+                    const rawName = (node.rawName || displayName || '').toString().trim();
+                    const rawId = (node.rawId || node.id || '').toString().trim();
+                    const nodeType = (node.nodeType || node.label || node.category || 'entity').toString().trim();
+                    const schemaType = (node.schemaType || '').toString().trim();
+                    const category = node.category || schemaType || nodeType || 'entity';
                     nodes.set(node.id, {
                         id: node.id,
-                        name: truncateWords(node.name || node.id || ''),
-                        category: node.category || 'entity',
+                        name: truncateWords(displayName || rawName || rawId),
+                        category: category,
                         symbolSize: node.symbolSize || 24,
-                        itemStyle: node.itemStyle || { color: getCategoryColor(node.category || 'entity') },
-                        rawName: node.name || node.id || ''
+                        itemStyle: node.itemStyle || { color: getCategoryColor(category) },
+                        rawName: rawName || rawId,
+                        rawId: rawId,
+                        nodeType: nodeType,
+                        schemaType: schemaType,
+                        sourceStrategy: node.source_strategy || 'unknown',
+                        firstSeenStep: node.first_seen_step || 1
                     });
-                    categories.add(node.category || 'entity');
+                    categories.add(category);
                 });
                 (graphData.links || []).forEach(link => {
                     links.push({
@@ -2581,6 +2592,8 @@ function displayAnswer(result) {
                         target: link.target,
                         name: truncateWords(link.name || link.relation || ''),
                         rawName: link.name || link.relation || '',
+                        sourceStrategy: link.source_strategy || 'unknown',
+                        firstSeenStep: link.first_seen_step || 1,
                         lineStyle: link.lineStyle || { color: '#6b73ff', width: 2 }
                     });
                 });
@@ -2671,10 +2684,23 @@ function displayAnswer(result) {
                     textStyle: { color: '#ffffff' },
                     formatter: function(params) {
                         if (params.dataType === 'node') {
-                            const rawFull = (params.data.rawName || params.data.id || '').toString().replace(/\s+/g,' ').trim();
-                            return `<strong>${rawFull}</strong><br/>Type: ${params.data.category}`;
+                            const rawFull = (params.data.rawName || params.data.name || '').toString().replace(/\s+/g,' ').trim();
+                            const rawId = (params.data.rawId || params.data.id || '').toString().replace(/\s+/g,' ').trim();
+                            const nodeType = (params.data.nodeType || params.data.category || '').toString().replace(/\s+/g,' ').trim();
+                            const schemaType = (params.data.schemaType || '').toString().replace(/\s+/g,' ').trim();
+                            const sourceStrategy = (params.data.sourceStrategy || 'unknown').toString().trim();
+                            const firstSeenStep = params.data.firstSeenStep || 1;
+                            const typeLabel = schemaType ? `${nodeType} / ${schemaType}` : nodeType;
+                            return `<strong>${rawFull}</strong><br/>ID: ${rawId}<br/>Type: ${typeLabel}<br/>Strategy: ${sourceStrategy}<br/>Step: ${firstSeenStep}`;
                         } else if (params.dataType === 'edge') {
                             const fullRel = (params.data.rawName || params.data.name || '').toString().replace(/\s+/g,' ').trim();
+                            const sourceNode = nodes.get(params.data.source);
+                            const targetNode = nodes.get(params.data.target);
+                            const sourceLabel = (sourceNode && (sourceNode.rawName || sourceNode.id) || params.data.source || '').toString().replace(/\s+/g,' ').trim();
+                            const targetLabel = (targetNode && (targetNode.rawName || targetNode.id) || params.data.target || '').toString().replace(/\s+/g,' ').trim();
+                            const strategy = (params.data.sourceStrategy || 'unknown').toString().trim();
+                            const step = params.data.firstSeenStep || 1;
+                            return `<strong>${fullRel}</strong><br/>${sourceLabel} → ${targetLabel}<br/>Strategy: ${strategy}<br/>Step: ${step}`;
                             return `<strong>${fullRel}</strong><br/>${params.data.source} → ${params.data.target}`;
                         }
                         return '';
@@ -2700,7 +2726,7 @@ function displayAnswer(result) {
                         color: 'rgba(255, 255, 255, 0.9)',
                         fontSize: 10,
                         formatter: function(p){
-                            let name = (p.data && (p.data.rawName || p.data.name || p.data.id) || '').toString().replace(/\s+/g,' ').trim();
+                            let name = (p.data && (p.data.rawName || p.data.name || '') || '').toString().replace(/\s+/g,' ').trim();
                             return truncateWords(name);
                         }
                     },

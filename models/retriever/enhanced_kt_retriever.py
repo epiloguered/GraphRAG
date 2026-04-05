@@ -1531,10 +1531,24 @@ class KTRetriever:
 
         structured_triples = []
         for head, relation, tail, score in limited_scored_triples:
+            head_text = self._get_node_text(head)
+            tail_text = self._get_node_text(tail)
+            head_node = self.graph.nodes[head] if head in self.graph.nodes else {}
+            tail_node = self.graph.nodes[tail] if tail in self.graph.nodes else {}
+            head_props = head_node.get("properties", {}) if isinstance(head_node.get("properties", {}), dict) else {}
+            tail_props = tail_node.get("properties", {}) if isinstance(tail_node.get("properties", {}), dict) else {}
             structured_triples.append({
                 "head": head,
+                "head_id": head,
+                "head_label": head_text,
+                "head_type": head_node.get("label", "entity"),
+                "head_schema_type": head_props.get("schema_type", head_node.get("schema_type", "")),
                 "relation": relation,
                 "tail": tail,
+                "tail_id": tail,
+                "tail_label": tail_text,
+                "tail_type": tail_node.get("label", "entity"),
+                "tail_schema_type": tail_props.get("schema_type", tail_node.get("schema_type", "")),
                 "score": float(score),
             })
 
@@ -1627,31 +1641,76 @@ class KTRetriever:
         prompt = self.generate_prompt(question, context)
         return self.generate_answer(prompt)
 
+    def _build_visual_node(
+        self,
+        node_id: str,
+        display_name: Optional[str] = None,
+        source_strategy: str = "unknown",
+        first_seen_step: int = 1,
+        node_type: Optional[str] = None,
+        schema_type: Optional[str] = None,
+    ) -> Dict:
+        graph_node = self.graph.nodes[node_id] if node_id in self.graph.nodes else {}
+        properties = graph_node.get("properties", {}) if isinstance(graph_node.get("properties", {}), dict) else {}
+        resolved_name = (display_name or self._get_node_text(node_id) or str(node_id)).strip()
+        resolved_node_type = node_type or graph_node.get("label", "entity")
+        resolved_schema_type = schema_type or properties.get("schema_type") or graph_node.get("schema_type", "")
+        category = resolved_schema_type or resolved_node_type or "entity"
+        truncated_name = resolved_name if len(resolved_name) <= 80 else resolved_name[:77] + "..."
+        return {
+            "id": node_id,
+            "name": truncated_name,
+            "rawName": resolved_name,
+            "rawId": node_id,
+            "category": category,
+            "nodeType": resolved_node_type,
+            "schemaType": resolved_schema_type,
+            "symbolSize": 22,
+            "source_strategy": source_strategy,
+            "first_seen_step": first_seen_step,
+        }
+
     def build_reasoning_subgraph(self, triples: List[str], trace: List[Dict] = None) -> Dict:
         trace = trace or []
         nodes = []
         links = []
         node_map = {}
+        categories = set()
 
         for step in trace:
             for structured_triple in step.get("meta", {}).get("structured_triples", []):
-                source = structured_triple.get("head")
+                source = structured_triple.get("head_id") or structured_triple.get("head")
                 relation = structured_triple.get("relation")
-                target = structured_triple.get("tail")
+                target = structured_triple.get("tail_id") or structured_triple.get("tail")
                 if not source or not relation or not target:
                     continue
-                for entity in [source, target]:
-                    if entity not in node_map:
-                        node = {
-                            "id": entity,
-                            "name": str(entity)[:32],
-                            "category": "entity",
-                            "symbolSize": 22,
-                            "source_strategy": step.get("strategy_name", "unknown"),
-                            "first_seen_step": step.get("step_id", 1),
-                        }
-                        node_map[entity] = node
+                source_label = structured_triple.get("head_label")
+                target_label = structured_triple.get("tail_label")
+                source_type = structured_triple.get("head_type")
+                target_type = structured_triple.get("tail_type")
+                source_schema_type = structured_triple.get("head_schema_type")
+                target_schema_type = structured_triple.get("tail_schema_type")
+                if not source_label and source in self.graph.nodes:
+                    source_label = self._get_node_text(source)
+                if not target_label and target in self.graph.nodes:
+                    target_label = self._get_node_text(target)
+                node_specs = [
+                    (source, source_label or str(source), source_type, source_schema_type),
+                    (target, target_label or str(target), target_type, target_schema_type),
+                ]
+                for node_id, display_name, node_type, schema_type in node_specs:
+                    if node_id not in node_map:
+                        node = self._build_visual_node(
+                            node_id=node_id,
+                            display_name=display_name,
+                            source_strategy=step.get("strategy_name", "unknown"),
+                            first_seen_step=step.get("step_id", 1),
+                            node_type=node_type,
+                            schema_type=schema_type,
+                        )
+                        node_map[node_id] = node
                         nodes.append(node)
+                        categories.add(node["category"])
                 links.append({
                     "source": source,
                     "target": target,
@@ -1673,16 +1732,15 @@ class KTRetriever:
                 source, relation, target = match.groups()
                 for entity in [source, target]:
                     if entity not in node_map:
-                        node = {
-                            "id": entity,
-                            "name": str(entity)[:32],
-                            "category": "entity",
-                            "symbolSize": 22,
-                            "source_strategy": "unknown",
-                            "first_seen_step": 1,
-                        }
+                        node = self._build_visual_node(
+                            node_id=entity,
+                            display_name=self._get_node_text(entity) if entity in self.graph.nodes else entity,
+                            source_strategy="unknown",
+                            first_seen_step=1,
+                        )
                         node_map[entity] = node
                         nodes.append(node)
+                        categories.add(node["category"])
                 links.append({
                     "source": source,
                     "target": target,
@@ -1695,7 +1753,10 @@ class KTRetriever:
         return {
             "nodes": nodes,
             "links": links,
-            "categories": [{"name": "entity", "itemStyle": {"color": "#95de64"}}],
+            "categories": [
+                {"name": category, "itemStyle": {"color": "#95de64"}}
+                for category in sorted(categories or {"entity"})
+            ],
         }
 
     def process_retrieval_results(self, question: str, top_k: int = 20, involved_types: dict = None) -> Tuple[Dict, float]:
