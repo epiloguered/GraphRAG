@@ -7,11 +7,14 @@ from strategies.base_strategy import BaseRetrievalStrategy
 
 
 class YoutuDefaultStrategy(BaseRetrievalStrategy):
+    """Default strategy that mirrors the original Youtu GraphRAG flow."""
+
     strategy_id = "youtu_default"
     display_name = "Youtu Default"
     description = "Decomposition + hybrid retrieval + IRCoT."
 
     async def run(self, *, question: str, dataset_name: str, graphq, kt_retriever, schema_path: str, options: Dict[str, Any], notify) -> Dict[str, Any]:
+        """Run decomposition, hybrid retrieval, and optional IRCoT refinement."""
         sub_questions, involved_types = await self.decompose_question(
             question,
             graphq,
@@ -33,6 +36,7 @@ class YoutuDefaultStrategy(BaseRetrievalStrategy):
         all_triples: List[str] = []
         all_chunks: List[str] = []
 
+        # Retrieve evidence independently for each decomposed sub-question first.
         for index, sub_question in enumerate(sub_questions):
             sub_text = sub_question.get("sub-question", question)
             started = time.perf_counter()
@@ -89,6 +93,7 @@ class YoutuDefaultStrategy(BaseRetrievalStrategy):
         thoughts = [f"Initial: {initial_answer[:200]}"] if initial_answer else []
         ircot_steps = 0
 
+        # Optional IRCoT loop expands the evidence set with follow-up retrieval queries.
         if options.get("use_ircot", True):
             current_query = question
             for step in range(1, options.get("max_steps", 3) + 1):
@@ -165,6 +170,7 @@ Your reasoning:
                     meta={"path": "ircot_followup", "structured_triples": retrieved.get("structured_triples", [])},
                 )
 
+        # Final trace drives both the response payload and the reasoning subgraph UI.
         append_trace(
             trace,
             stage="answer",

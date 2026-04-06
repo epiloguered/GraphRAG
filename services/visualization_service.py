@@ -3,6 +3,7 @@ from typing import Any, Dict, List
 
 
 def prepare_subquery_visualization(sub_questions: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Build a small graph showing how the original question decomposes."""
     nodes = [{"id": "original", "name": "Original Question", "category": "question", "symbolSize": 40}]
     links = []
 
@@ -28,6 +29,7 @@ def prepare_subquery_visualization(sub_questions: List[Dict[str, Any]]) -> Dict[
 
 
 def prepare_reasoning_flow_visualization(reasoning_steps: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Project reasoning steps into a timeline-friendly structure."""
     steps = []
     for index, step in enumerate(reasoning_steps):
         steps.append({
@@ -46,6 +48,7 @@ def prepare_reasoning_flow_visualization(reasoning_steps: List[Dict[str, Any]]) 
 
 
 def subgraph_from_triples(triples: List[str], source_strategy: str = "unknown") -> Dict[str, Any]:
+    """Fallback parser for building a graph when structured subgraph data is missing."""
     nodes: List[Dict[str, Any]] = []
     links: List[Dict[str, Any]] = []
     node_index: Dict[str, Dict[str, Any]] = {}
@@ -101,6 +104,7 @@ def subgraph_from_triples(triples: List[str], source_strategy: str = "unknown") 
 
 
 def prepare_strategy_visualization(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Assemble all visualization payloads consumed by the frontend panels."""
     reasoning_subgraph = result.get("reasoning_subgraph") or subgraph_from_triples(
         result.get("retrieved_triples", []),
         source_strategy=result.get("strategy_name", "unknown"),

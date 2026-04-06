@@ -4,6 +4,8 @@ from pydantic import BaseModel, Field
 
 
 class AskQuestionRequest(BaseModel):
+    """Payload for running a single retrieval strategy."""
+
     question: str
     dataset_name: str
     retrieval_mode: str = "youtu_default"
@@ -16,6 +18,8 @@ class AskQuestionRequest(BaseModel):
 
 
 class CompareQuestionRequest(BaseModel):
+    """Payload for running multiple strategies against the same question."""
+
     question: str
     dataset_name: str
     compare_modes: List[str]

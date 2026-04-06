@@ -12,6 +12,7 @@ def build_metrics(
     ircot_steps: int,
     retrieval_rounds: int,
 ) -> Dict[str, Any]:
+    """Build the normalized metrics block shared by single and compare responses."""
     return {
         "latency_ms": round(latency_ms, 3),
         "triples_count": len(result.get("retrieved_triples", [])),
@@ -34,6 +35,7 @@ def format_strategy_result(
     ircot_steps: int,
     retrieval_rounds: int,
 ) -> Dict[str, Any]:
+    """Normalize a raw strategy output into the API response shape."""
     result = {
         "strategy_name": strategy_name,
         "answer": raw_result.get("answer", ""),
@@ -57,6 +59,7 @@ def format_strategy_result(
 
 
 def build_comparison_summary(results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Create a lightweight summary used by the compare endpoint and UI."""
     if not results:
         return {}
 

@@ -4,6 +4,8 @@ from pydantic import BaseModel, Field
 
 
 class StrategyRunResponse(BaseModel):
+    """Normalized response returned by both single-run and compare-run flows."""
+
     strategy_name: str
     answer: str
     sub_questions: List[Dict[str, Any]] = Field(default_factory=list)
@@ -17,6 +19,8 @@ class StrategyRunResponse(BaseModel):
 
 
 class CompareQuestionResponse(BaseModel):
+    """Response returned by the strategy comparison endpoint."""
+
     question: str
     dataset_name: str
     results: List[StrategyRunResponse] = Field(default_factory=list)

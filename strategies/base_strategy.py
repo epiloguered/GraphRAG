@@ -4,11 +4,14 @@ from typing import Any, Dict, List, Tuple
 
 
 class BaseRetrievalStrategy(ABC):
+    """Shared helpers for all retrieval strategies."""
+
     strategy_id = "base"
     display_name = "Base"
     description = ""
 
     async def _run_blocking(self, func, *args, **kwargs):
+        """Run a blocking retriever or LLM call without stalling the event loop."""
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, lambda: func(*args, **kwargs))
 
@@ -19,6 +22,7 @@ class BaseRetrievalStrategy(ABC):
         schema_path: str,
         use_decomposition: bool,
     ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        """Optionally decompose a question and return a stable fallback shape on failure."""
         if not use_decomposition:
             return [{"sub-question": question}], {"nodes": [], "relations": [], "attributes": []}
 
@@ -32,9 +36,11 @@ class BaseRetrievalStrategy(ABC):
             }
             return sub_questions, involved_types
         except Exception:
+            # Strategies should remain usable even when decomposition fails.
             return [{"sub-question": question}], {"nodes": [], "relations": [], "attributes": []}
 
     def dedup_preserve(self, items: List[Any]) -> List[Any]:
+        """Deduplicate while preserving order for strings, dicts, and trace payloads."""
         seen = set()
         output = []
         for item in items:
@@ -57,4 +63,5 @@ class BaseRetrievalStrategy(ABC):
         options: Dict[str, Any],
         notify,
     ) -> Dict[str, Any]:
+        """Execute the strategy and return raw retrieval and reasoning artifacts."""
         raise NotImplementedError

@@ -6,11 +6,14 @@ from strategies.base_strategy import BaseRetrievalStrategy
 
 
 class ChunkOnlyStrategy(BaseRetrievalStrategy):
+    """Baseline strategy that answers from dense chunk retrieval only."""
+
     strategy_id = "chunk_only"
     display_name = "Chunk Only"
     description = "Dense chunk retrieval only."
 
     async def run(self, *, question: str, dataset_name: str, graphq, kt_retriever, schema_path: str, options: Dict[str, Any], notify) -> Dict[str, Any]:
+        """Retrieve chunk evidence per sub-question and answer without graph triples."""
         sub_questions, _ = await self.decompose_question(
             question,
             graphq,
@@ -25,6 +28,7 @@ class ChunkOnlyStrategy(BaseRetrievalStrategy):
         all_chunks: List[str] = []
         all_chunk_ids: List[str] = []
 
+        # Each sub-question is resolved independently so the UI can compare chunk recall.
         for index, sub_question in enumerate(sub_questions):
             sub_text = sub_question.get("sub-question", question)
             started = time.perf_counter()
@@ -66,6 +70,7 @@ class ChunkOnlyStrategy(BaseRetrievalStrategy):
                     "chunks_count": len(retrieved.get("chunk_contents", [])),
                 })
 
+        # Chunk-only mode passes an empty triple list to keep downstream answer generation uniform.
         final_chunks = self.dedup_preserve(all_chunks)[: options.get("top_k", 20)]
         answer = await self._run_blocking(
             kt_retriever.build_answer_from_context,

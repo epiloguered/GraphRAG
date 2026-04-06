@@ -634,7 +634,11 @@ class KTRetriever:
 
     def _type_filtered_node_relation_retrieval(self, question_embed: torch.Tensor, question: str, involved_types: dict) -> Dict:
         """
-        Single path retrieval with type filtering only on node_relation path.
+        Single-path retrieval with type filtering only on the node+relation path.
+
+        This branch still returns triples as graph node ids so reranking, chunk
+        backreferences, and subgraph construction stay consistent with the
+        non-filtered node+relation path.
         """
         target_node_types = involved_types.get('nodes', [])
         
@@ -646,11 +650,17 @@ class KTRetriever:
             one_hop_triples = self._get_one_hop_triples_from_nodes(filtered_node_results['top_nodes'])
             
             chunk_ids = self._extract_chunk_ids_from_nodes(filtered_node_results['top_nodes'])
+            chunk_results = {
+                "chunk_ids": list(chunk_ids),
+                "scores": [0.0] * len(chunk_ids),
+                "chunk_contents": self._get_matching_chunks(chunk_ids)
+            }
             
             result = {
                 "path1_results": {
                     "top_nodes": filtered_node_results['top_nodes'],
-                    "one_hop_triples": one_hop_triples
+                    "one_hop_triples": one_hop_triples,
+                    "chunk_results": chunk_results
                 },
                 "chunk_ids": list(chunk_ids)
             }
@@ -696,15 +706,21 @@ class KTRetriever:
 
     def _type_filtered_node_relation_path(self, question_embed: torch.Tensor, filtered_nodes: list) -> Dict:
         """
-        Execute type-filtered node_relation path.
+        Execute the type-filtered node+relation path with chunk metadata attached.
         """
         filtered_node_results = self._similarity_search_on_filtered_nodes(question_embed, filtered_nodes)
         
         one_hop_triples = self._get_one_hop_triples_from_nodes(filtered_node_results['top_nodes'])
+        chunk_ids = self._extract_chunk_ids_from_nodes(filtered_node_results['top_nodes'])
         
         return {
             "top_nodes": filtered_node_results['top_nodes'],
-            "one_hop_triples": one_hop_triples
+            "one_hop_triples": one_hop_triples,
+            "chunk_results": {
+                "chunk_ids": list(chunk_ids),
+                "scores": [0.0] * len(chunk_ids),
+                "chunk_contents": self._get_matching_chunks(chunk_ids)
+            }
         }
 
     def _similarity_search_on_filtered_nodes(self, question_embed: torch.Tensor, filtered_nodes: list) -> Dict:
@@ -746,6 +762,7 @@ class KTRetriever:
         return {"top_nodes": top_filtered_nodes}
 
     def _get_one_hop_triples_from_nodes(self, node_list: list) -> list:
+        """Collect one-hop triples around the seed nodes using raw graph node ids."""
 
         one_hop_triples = []
         node_set = set(node_list)
@@ -753,9 +770,7 @@ class KTRetriever:
         for u, v, data in self.graph.edges(data=True):
             if u in node_set or v in node_set:
                 relation = data.get('relation', '')
-                u_name = self._get_node_name(u)
-                v_name = self._get_node_name(v)
-                one_hop_triples.append((u_name, relation, v_name))
+                one_hop_triples.append((u, relation, v))
         
         return one_hop_triples[:self.top_k]
 
@@ -1515,20 +1530,27 @@ class KTRetriever:
         source_path: str = "hybrid",
         top_k: int = 20,
     ) -> Dict:
+        """Normalize strategy-specific retrieval artifacts into one shared structure."""
         scored_triples = scored_triples or []
         retrieved_nodes = retrieved_nodes or []
 
+        # Normalize chunk retrieval output before merging it with triple-derived chunks.
         chunk_retrieval_results, chunk_retrieval_ids = self._process_chunk_results(
             chunk_results or {},
             question_embed,
             top_k,
         )
+
+        # Enforce one shared top_k budget so compare mode stays fair across strategies.
         limited_scored_triples = scored_triples[:top_k]
         formatted_triples = self._format_scored_triples(limited_scored_triples)
+
+        # Triple nodes may still point back to chunk ids even when chunk retrieval is disabled.
         triple_chunk_ids = self._extract_chunk_ids_from_triples(limited_scored_triples)
         all_chunk_ids = chunk_retrieval_ids | triple_chunk_ids
         matching_chunks = self._get_matching_chunks(all_chunk_ids)
 
+        # Structured triples keep both ids and readable labels for the reasoning subgraph.
         structured_triples = []
         for head, relation, tail, score in limited_scored_triples:
             head_text = self._get_node_text(head)
@@ -1564,17 +1586,22 @@ class KTRetriever:
         }
 
     def retrieve_youtu_hybrid(self, question: str, top_k: int = 20, involved_types: dict = None) -> Dict:
+        """Run the default hybrid retrieval flow used by the Youtu strategy."""
         if involved_types:
             question_embed, results = self.retrieve_with_type_filtering(question, involved_types)
         else:
             question_embed, results = self.retrieve(question)
 
+        # Hybrid mode combines path1 and path2 triples before final formatting.
         all_scored_triples = self._collect_all_scored_triples(results, question_embed)
+
+        # Expose both seed nodes and triple-touched nodes to the frontend.
         top_nodes = list(results.get("path1_results", {}).get("top_nodes", []))
         scored_nodes = []
         for head, _, tail, _ in all_scored_triples[:top_k]:
             scored_nodes.extend([head, tail])
         retrieved_nodes = list(dict.fromkeys(top_nodes + scored_nodes))
+
         chunk_results = results.get("path1_results", {}).get("chunk_results")
         return self._format_unified_retrieval_output(
             question_embed,
@@ -1586,6 +1613,7 @@ class KTRetriever:
         )
 
     def retrieve_triple_only(self, question: str, top_k: int = 20, involved_types: dict = None) -> Dict:
+        """Run triple/community retrieval without the node+relation path."""
         question_embed = self._get_query_embedding(question)
         results = self._triple_only_retrieval(question_embed)
         scored_triples = results.get("scored_triples", [])
@@ -1602,12 +1630,15 @@ class KTRetriever:
         )
 
     def retrieve_node_relation_only(self, question: str, top_k: int = 20, involved_types: dict = None) -> Dict:
+        """Run only the node+relation path while keeping triples in node-id form."""
         question_embed = self._get_query_embedding(question)
         if involved_types and any(involved_types.get(key, []) for key in ["nodes", "relations", "attributes"]):
             filtered_results = self._type_filtered_node_relation_retrieval(question_embed, question, involved_types)
             path1_results = filtered_results.get("path1_results", filtered_results)
         else:
             path1_results = self._node_relation_retrieval(question_embed, question)
+
+        # Rerank one-hop triples against the current question embedding.
         scored_triples = self._rerank_triples_by_relevance(
             path1_results.get("one_hop_triples", []),
             question_embed,
@@ -1622,8 +1653,11 @@ class KTRetriever:
         )
 
     def retrieve_chunk_only(self, question: str, top_k: int = 20, involved_types: dict = None) -> Dict:
+        """Run chunk-only retrieval and return an empty triple set."""
         question_embed = self._get_query_embedding(question)
         chunk_results = self._chunk_embedding_retrieval(question_embed, top_k)
+
+        # Apply a second-pass chunk reranker before building the answer prompt.
         reranked_results = self._rerank_chunks_by_relevance(chunk_results, question_embed, top_k)
         return {
             "triples": [],
@@ -1636,6 +1670,7 @@ class KTRetriever:
         }
 
     def build_answer_from_context(self, question: str, triples: List[str], chunks: List[str]) -> str:
+        """Assemble a shared answer prompt from retrieved triples and chunk passages."""
         context = "=== Triples ===\n" + "\n".join(triples[:20])
         context += "\n=== Chunks ===\n" + "\n---\n".join(chunks[:10])
         prompt = self.generate_prompt(question, context)
@@ -1650,6 +1685,7 @@ class KTRetriever:
         node_type: Optional[str] = None,
         schema_type: Optional[str] = None,
     ) -> Dict:
+        """Build one frontend-ready graph node with both raw ids and display labels."""
         graph_node = self.graph.nodes[node_id] if node_id in self.graph.nodes else {}
         properties = graph_node.get("properties", {}) if isinstance(graph_node.get("properties", {}), dict) else {}
         resolved_name = (display_name or self._get_node_text(node_id) or str(node_id)).strip()
@@ -1671,12 +1707,14 @@ class KTRetriever:
         }
 
     def build_reasoning_subgraph(self, triples: List[str], trace: List[Dict] = None) -> Dict:
+        """Build the subgraph payload consumed by the frontend reasoning view."""
         trace = trace or []
         nodes = []
         links = []
         node_map = {}
         categories = set()
 
+        # Prefer structured trace triples because they already contain labels and type metadata.
         for step in trace:
             for structured_triple in step.get("meta", {}).get("structured_triples", []):
                 source = structured_triple.get("head_id") or structured_triple.get("head")
@@ -1711,6 +1749,8 @@ class KTRetriever:
                         node_map[node_id] = node
                         nodes.append(node)
                         categories.add(node["category"])
+
+                # Preserve provenance so the tooltip can show strategy and step information.
                 links.append({
                     "source": source,
                     "target": target,
@@ -1721,6 +1761,7 @@ class KTRetriever:
                     "score": structured_triple.get("score"),
                 })
 
+        # Fall back to parsing triple strings when the strategy did not emit structured trace data.
         if not nodes:
             for triple in triples:
                 body = triple
@@ -1750,6 +1791,7 @@ class KTRetriever:
                     "first_seen_step": 1,
                 })
 
+        # Return an ECharts-friendly graph structure.
         return {
             "nodes": nodes,
             "links": links,
@@ -1758,7 +1800,6 @@ class KTRetriever:
                 for category in sorted(categories or {"entity"})
             ],
         }
-
     def process_retrieval_results(self, question: str, top_k: int = 20, involved_types: dict = None) -> Tuple[Dict, float]:
         """Process retrieval results with optimized structure and helper methods."""
         start_time = time.time()

@@ -6,11 +6,14 @@ from strategies.base_strategy import BaseRetrievalStrategy
 
 
 class NodeRelationStrategy(BaseRetrievalStrategy):
+    """Baseline strategy that uses only the node+relation retrieval path."""
+
     strategy_id = "node_relation_only"
     display_name = "Node + Relation"
     description = "Node and relation retrieval only."
 
     async def run(self, *, question: str, dataset_name: str, graphq, kt_retriever, schema_path: str, options: Dict[str, Any], notify) -> Dict[str, Any]:
+        """Retrieve one-hop graph evidence for each sub-question and answer from it."""
         sub_questions, involved_types = await self.decompose_question(
             question,
             graphq,
@@ -25,6 +28,7 @@ class NodeRelationStrategy(BaseRetrievalStrategy):
         all_triples: List[str] = []
         all_chunks: List[str] = []
 
+        # This strategy keeps the internal triple format as node ids until formatting time.
         for index, sub_question in enumerate(sub_questions):
             sub_text = sub_question.get("sub-question", question)
             started = time.perf_counter()
@@ -68,6 +72,7 @@ class NodeRelationStrategy(BaseRetrievalStrategy):
                     "chunks_count": len(retrieved.get("chunk_contents", [])),
                 })
 
+        # The same merged evidence is reused for answer generation and subgraph visualization.
         final_triples = self.dedup_preserve(all_triples)[: options.get("top_k", 20)]
         final_chunks = self.dedup_preserve(all_chunks)[: options.get("top_k", 20)]
         answer = await self._run_blocking(

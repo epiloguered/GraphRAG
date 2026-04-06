@@ -6,11 +6,14 @@ from strategies.base_strategy import BaseRetrievalStrategy
 
 
 class TripleOnlyStrategy(BaseRetrievalStrategy):
+    """Baseline strategy that relies on triple/community retrieval only."""
+
     strategy_id = "triple_only"
     display_name = "Triple Only"
     description = "FAISS triple and community retrieval."
 
     async def run(self, *, question: str, dataset_name: str, graphq, kt_retriever, schema_path: str, options: Dict[str, Any], notify) -> Dict[str, Any]:
+        """Retrieve scored triples per sub-question and answer from the merged evidence."""
         sub_questions, involved_types = await self.decompose_question(
             question,
             graphq,
@@ -25,6 +28,7 @@ class TripleOnlyStrategy(BaseRetrievalStrategy):
         all_triples: List[str] = []
         all_chunks: List[str] = []
 
+        # Triple retrieval still records chunk backreferences so the answer prompt can reuse them.
         for index, sub_question in enumerate(sub_questions):
             sub_text = sub_question.get("sub-question", question)
             started = time.perf_counter()
@@ -68,6 +72,7 @@ class TripleOnlyStrategy(BaseRetrievalStrategy):
                     "chunks_count": len(retrieved.get("chunk_contents", [])),
                 })
 
+        # Subgraph rendering is generated from the same trace used in the compare UI.
         final_triples = self.dedup_preserve(all_triples)[: options.get("top_k", 20)]
         final_chunks = self.dedup_preserve(all_chunks)[: options.get("top_k", 20)]
         answer = await self._run_blocking(

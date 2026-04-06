@@ -1506,6 +1506,7 @@
             updateLangButtons();
         }
 
+        // Load the retrieval mode metadata exposed by the backend.
         async function loadRetrievalModes() {
             try {
                 const response = await axios.get(`${API_BASE}/api/retrieval-modes`);
@@ -1521,6 +1522,7 @@
             renderStrategySelectors();
         }
 
+        // Render the single-select and compare checkbox lists from the same mode catalog.
         function renderStrategySelectors() {
             const singleSelect = document.getElementById('singleStrategySelect');
             const compareList = document.getElementById('compareStrategyList');
@@ -1539,6 +1541,7 @@
             }
         }
 
+        // Toggle between single-run and compare-run controls.
         function toggleQAMode() {
             const runMode = document.getElementById('qaRunMode')?.value || 'single';
             const singleGroup = document.getElementById('singleStrategyGroup');
@@ -1556,6 +1559,7 @@
             }
         }
 
+        // Build the payload expected by /api/ask-question.
         function buildAskPayload() {
             return {
                 question: document.getElementById('questionInput').value.trim(),
@@ -1570,6 +1574,7 @@
             };
         }
 
+        // Build the payload expected by /api/compare-question.
         function buildComparePayload() {
             const compareModes = Array.from(document.querySelectorAll('.compareStrategyCheckbox:checked')).map(input => input.value);
             return {
@@ -2152,6 +2157,7 @@
         }
 
 async function askQuestion() {
+            // Dispatch to the appropriate flow based on the selected run mode.
             const runMode = document.getElementById('qaRunMode')?.value || 'single';
             if (runMode === 'compare') {
                 return askQuestionCompare();
@@ -2160,6 +2166,7 @@ async function askQuestion() {
         }
 
         async function askQuestionSingle() {
+            // Single mode keeps the existing answer/detail panel and one subgraph view.
             const payload = buildAskPayload();
             if (!payload.dataset_name || !payload.question) {
                 showMessage(i18n[currentLang].pleaseSelectAndEnter, 'error');
@@ -2234,6 +2241,7 @@ async function askQuestion() {
         }
 
         async function askQuestionCompare() {
+            // Compare mode reuses one question but renders one result card per strategy.
             const payload = buildComparePayload();
             if (!payload.dataset_name || !payload.question || !payload.compare_modes.length) {
                 showMessage('Please select a dataset, enter a question, and choose at least one strategy', 'error');
@@ -2300,6 +2308,7 @@ function displayAnswer(result) {
         }
 
         function displaySingleStrategyResult(result) {
+            // Single mode exposes strategy metadata plus the standard retrieval details panel.
             const answerSection = document.getElementById('answerSection');
             const compareSection = document.getElementById('compareResultsSection');
             const strategyMeta = document.getElementById('strategyMeta');
@@ -2322,6 +2331,7 @@ function displayAnswer(result) {
         }
 
         function displayCompareResults(payload) {
+            // Compare mode renders lightweight cards and one subgraph per strategy.
             const compareSection = document.getElementById('compareResultsSection');
             const answerSection = document.getElementById('answerSection');
             const container = document.getElementById('compareResults');
@@ -2488,6 +2498,7 @@ function displayAnswer(result) {
         }
 
         function renderReasoningSubgraph(containerId, graphOrTriples) {
+            // graphOrTriples can be a backend reasoning_subgraph payload or a raw triple list fallback.
             renderTriplesChart(graphOrTriples, containerId);
         }
 
@@ -2564,6 +2575,8 @@ function displayAnswer(result) {
             const categories = new Set();
 
             if (graphData && Array.isArray(graphData.nodes)) {
+                // Backend graph nodes expose both raw ids and display labels:
+                // rawName/rawId/nodeType/schemaType are consumed by labels and tooltips.
                 (graphData.nodes || []).forEach(node => {
                     const displayName = (node.name || '').toString().trim();
                     const rawName = (node.rawName || displayName || '').toString().trim();
@@ -2683,6 +2696,7 @@ function displayAnswer(result) {
                     backgroundColor: 'rgba(0, 0, 0, 0.8)',
                     textStyle: { color: '#ffffff' },
                     formatter: function(params) {
+                        // Node tooltips prioritize readable text while keeping raw ids available for debugging.
                         if (params.dataType === 'node') {
                             const rawFull = (params.data.rawName || params.data.name || '').toString().replace(/\s+/g,' ').trim();
                             const rawId = (params.data.rawId || params.data.id || '').toString().replace(/\s+/g,' ').trim();

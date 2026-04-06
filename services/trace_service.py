@@ -13,6 +13,7 @@ def create_trace_step(
     duration_ms: float = 0.0,
     meta: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    """Create a single trace item with a stable schema for all strategies."""
     return {
         "step_id": step_id,
         "stage": stage,
@@ -39,6 +40,7 @@ def append_trace(
     duration_ms: float = 0.0,
     meta: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    """Append a new trace step and return the appended payload."""
     step = create_trace_step(
         step_id=len(trace) + 1,
         stage=stage,

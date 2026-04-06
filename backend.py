@@ -655,6 +655,7 @@ def convert_standard_format(graph_data: Dict) -> Dict:
 
 @app.get("/api/retrieval-modes")
 async def get_retrieval_modes():
+    """Return the retrieval modes used by the strategy selector UI."""
     if qa_orchestrator is None:
         return {
             "modes": [
@@ -669,6 +670,7 @@ async def get_retrieval_modes():
 
 @app.post("/api/ask-question", response_model=StrategyRunResponse)
 async def ask_question(request: AskQuestionRequest, client_id: str = "default"):
+    """Run one retrieval strategy through the shared QA orchestrator."""
     try:
         if not GRAPHRAG_AVAILABLE:
             raise HTTPException(status_code=503, detail="GraphRAG components not available. Please install or configure them.")
@@ -686,6 +688,7 @@ async def ask_question(request: AskQuestionRequest, client_id: str = "default"):
 
 @app.post("/api/compare-question", response_model=CompareQuestionResponse)
 async def compare_question(request: CompareQuestionRequest, client_id: str = "default"):
+    """Run multiple strategies against the same question for side-by-side comparison."""
     try:
         if not GRAPHRAG_AVAILABLE:
             raise HTTPException(status_code=503, detail="GraphRAG components not available. Please install or configure them.")
