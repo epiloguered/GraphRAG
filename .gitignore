@@ -24,5 +24,6 @@ data/
 output/
 
 retriever/faiss_cache_new/*
+retriever/demo/*
 docker/Dockerfile
 site/
