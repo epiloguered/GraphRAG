@@ -27,7 +27,7 @@ COPY . /youtu_graphrag/
 RUN chmod +x start.sh
 
 # 7. Setup environment. If using Chinese mode, the corresponding Chinese database should be used here.
-RUN pip install -r requirements.txt && python -m spacy download en_core_web_lg
+RUN pip install -r requirements.txt && python -m spacy download zh_core_web_lg && python -m spacy download en_core_web_lg
 
 # 8. Expose application port
 EXPOSE 8000
